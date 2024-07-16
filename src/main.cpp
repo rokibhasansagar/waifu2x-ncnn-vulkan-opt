@@ -1,10 +1,13 @@
 // waifu2x implemented with ncnn library
-
+#include <iostream>
 #include <stdio.h>
 #include <algorithm>
 #include <queue>
 #include <vector>
 #include <clocale>
+#include <filesystem>
+namespace fs = std::filesystem;
+
 
 #if _WIN32
 // image decoder and encoder with wic
@@ -102,17 +105,17 @@ static void print_usage()
 {
     fprintf(stdout, "Usage: waifu2x-ncnn-vulkan -i infile -o outfile [options]...\n\n");
     fprintf(stdout, "  -h                   show this help\n");
-    fprintf(stdout, "  -v                   verbose output\n");
     fprintf(stdout, "  -i input-path        input image path (jpg/png/webp) or directory\n");
     fprintf(stdout, "  -o output-path       output image path (jpg/png/webp) or directory\n");
     fprintf(stdout, "  -n noise-level       denoise level (-1/0/1/2/3, default=0)\n");
     fprintf(stdout, "  -s scale             upscale ratio (1/2/4/8/16/32, default=2)\n");
     fprintf(stdout, "  -t tile-size         tile size (>=32/0=auto, default=0) can be 0,0,0 for multi-gpu\n");
-    fprintf(stdout, "  -m model-path        waifu2x model path (default=models-cunet)\n");
+    fprintf(stdout, "  -m model-path        waifu2x model path (default=models-cunet, can be models-cunet | models-upconv_7_anime_style_art_rgb | models-upconv_7_photo)\n");
     fprintf(stdout, "  -g gpu-id            gpu device to use (-1=cpu, default=auto) can be 0,1,2 for multi-gpu\n");
     fprintf(stdout, "  -j load:proc:save    thread count for load/proc/save (default=1:2:2) can be 1:2,2,2:2 for multi-gpu\n");
-    fprintf(stdout, "  -x                   enable tta mode\n");
     fprintf(stdout, "  -f format            output image format (jpg/png/webp, default=ext/png)\n");
+    fprintf(stdout, "  -x                   enable tta mode\n");
+    fprintf(stdout, "  -v                   verbose output\n");
 }
 
 class Task
@@ -413,6 +416,14 @@ void* save(void* args)
         int success = 0;
 
         path_t ext = get_file_extension(v.outpath);
+
+        /* ----------- Create folder if not exists -------------------*/
+        fs::path fs_path = fs::absolute(v.outpath);
+        std::string parent_path = fs_path.parent_path().string();
+        if (fs::exists(parent_path) != 1){
+            std::cout << "Create folder: [" << parent_path << "]." << std::endl;
+            fs::create_directories(parent_path);
+        }
 
         if (ext == PATHSTR("webp") || ext == PATHSTR("WEBP"))
         {

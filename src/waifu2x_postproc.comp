@@ -35,6 +35,9 @@ layout (push_constant) uniform parameter
     int offset_x;
     int gx_max;
 
+    int crop_x;
+    int crop_y;
+
     int channels;
 
     int alphaw;
@@ -58,7 +61,7 @@ void main()
     }
     else
     {
-        v = float(bottom_blob_data[gz * p.cstep + gy * p.w + gx]);
+        v = float(bottom_blob_data[gz * p.cstep + (gy + p.crop_y) * p.w + gx + p.crop_x]);
 
         const float denorm_val = 255.f;
 

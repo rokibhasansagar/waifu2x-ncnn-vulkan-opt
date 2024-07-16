@@ -1,13 +1,30 @@
-cmake_policy(SET CMP0091 NEW)
-set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+cmake_minimum_required(VERSION 3.9)
+
+if(NOT CMAKE_VERSION VERSION_LESS "3.15")
+    # enable CMAKE_MSVC_RUNTIME_LIBRARY
+    cmake_policy(SET CMP0091 NEW)
+    if(MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endif()
+
+# -------------- Support C++17 for using filesystem  ------------------#
+# https://cmake.org/cmake/help/latest/prop_tgt/CXX_STANDARD.html
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# expected behaviour
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++lastest")
+# -------------- End  ------------------#
+
+# set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
 
 project(waifu2x-ncnn-vulkan)
 
-cmake_minimum_required(VERSION 3.9)
-
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE release CACHE STRING "Choose the type of build" FORCE)
+    # set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build" FORCE)
+    set(CMAKE_BUILD_TYPE Release)
 endif()
 
 option(USE_SYSTEM_NCNN "build with system libncnn" OFF)
@@ -18,20 +35,54 @@ find_package(Threads)
 find_package(OpenMP)
 find_package(Vulkan REQUIRED)
 
-macro(waifu2x_add_shader SHADER_SRC)
-    get_filename_component(SHADER_SRC_NAME_WE ${SHADER_SRC} NAME_WE)
-    set(SHADER_COMP_HEADER ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_SRC_NAME_WE}.comp.hex.h)
+# check glslangValidator
+find_program(GLSLANGVALIDATOR_EXECUTABLE NAMES glslangValidator PATHS $ENV{VULKAN_SDK}/bin NO_CMAKE_FIND_ROOT_PATH)
+message(STATUS "Found glslangValidator: ${GLSLANGVALIDATOR_EXECUTABLE}")
 
+macro(compile_shader SHADER_SRC)
+    set(SHADER_SRC_FULLPATH ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_SRC})
+    get_filename_component(SHADER_SRC_NAME_WE ${SHADER_SRC} NAME_WE)
+    set(SHADER_SPV_HEX_FILE ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_SRC_NAME_WE}.spv.hex.h)
     add_custom_command(
-        OUTPUT ${SHADER_COMP_HEADER}
-        COMMAND ${CMAKE_COMMAND} -DSHADER_SRC=${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_SRC} -DSHADER_COMP_HEADER=${SHADER_COMP_HEADER} -P "${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_comp_header.cmake"
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_SRC}
-        COMMENT "Preprocessing shader source ${SHADER_SRC_NAME_WE}.comp"
+        OUTPUT ${SHADER_SPV_HEX_FILE}
+        COMMAND ${GLSLANGVALIDATOR_EXECUTABLE}
+        ARGS -V -s -x -o ${SHADER_SPV_HEX_FILE} ${SHADER_SRC_FULLPATH}
+        DEPENDS ${SHADER_SRC_FULLPATH}
+        COMMENT "Building SPIR-V module ${SHADER_SRC_NAME_WE}.spv"
         VERBATIM
     )
-    set_source_files_properties(${SHADER_COMP_HEADER} PROPERTIES GENERATED TRUE)
+    set_source_files_properties(${SHADER_SPV_HEX_FILE} PROPERTIES GENERATED TRUE)
+    list(APPEND SHADER_SPV_HEX_FILES ${SHADER_SPV_HEX_FILE})
 
-    list(APPEND SHADER_SPV_HEX_FILES ${SHADER_COMP_HEADER})
+    # fp16 storage
+    set(SHADER_fp16s_SRC_NAME_WE "${SHADER_SRC_NAME_WE}_fp16s")
+
+    set(SHADER_fp16s_SPV_HEX_FILE ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_fp16s_SRC_NAME_WE}.spv.hex.h)
+    add_custom_command(
+        OUTPUT ${SHADER_fp16s_SPV_HEX_FILE}
+        COMMAND ${GLSLANGVALIDATOR_EXECUTABLE}
+        ARGS -DNCNN_fp16_storage=1 -V -s -x -o ${SHADER_fp16s_SPV_HEX_FILE} ${SHADER_SRC_FULLPATH}
+        DEPENDS ${SHADER_SRC_FULLPATH}
+        COMMENT "Building SPIR-V module ${SHADER_fp16s_SRC_NAME_WE}.spv"
+        VERBATIM
+    )
+    set_source_files_properties(${SHADER_fp16s_SPV_HEX_FILE} PROPERTIES GENERATED TRUE)
+    list(APPEND SHADER_SPV_HEX_FILES ${SHADER_fp16s_SPV_HEX_FILE})
+
+    # int8 storage
+    set(SHADER_int8s_SRC_NAME_WE "${SHADER_SRC_NAME_WE}_int8s")
+
+    set(SHADER_int8s_SPV_HEX_FILE ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_int8s_SRC_NAME_WE}.spv.hex.h)
+    add_custom_command(
+        OUTPUT ${SHADER_int8s_SPV_HEX_FILE}
+        COMMAND ${GLSLANGVALIDATOR_EXECUTABLE}
+        ARGS -DNCNN_fp16_storage=1 -DNCNN_int8_storage=1 -V -s -x -o ${SHADER_int8s_SPV_HEX_FILE} ${SHADER_SRC_FULLPATH}
+        DEPENDS ${SHADER_SRC_FULLPATH}
+        COMMENT "Building SPIR-V module ${SHADER_int8s_SRC_NAME_WE}.spv"
+        VERBATIM
+    )
+    set_source_files_properties(${SHADER_int8s_SPV_HEX_FILE} PROPERTIES GENERATED TRUE)
+    list(APPEND SHADER_SPV_HEX_FILES ${SHADER_int8s_SPV_HEX_FILE})
 endmacro()
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
@@ -54,27 +105,30 @@ else()
 endif()
 
 if(USE_SYSTEM_NCNN)
-    set(GLSLANG_TARGET_DIR "GLSLANG-NOTFOUND" CACHE PATH "Absolute path to glslangTargets.cmake directory")
-    if(NOT GLSLANG_TARGET_DIR AND NOT DEFINED ENV{GLSLANG_TARGET_DIR})
-        message(WARNING "GLSLANG_TARGET_DIR must be defined! USE_SYSTEM_NCNN will be turned off.")
-        set(USE_SYSTEM_NCNN OFF)
+    find_package(Threads)
+    find_package(glslang QUIET)
+    if(glslang_FOUND)
+        add_library(glslang ALIAS glslang::glslang)
+        add_library(SPIRV ALIAS glslang::SPIRV)
     else()
-        message(STATUS "Using glslang install located at ${GLSLANG_TARGET_DIR}")
-
-        find_package(Threads)
-
-        include("${GLSLANG_TARGET_DIR}/OSDependentTargets.cmake")
-        include("${GLSLANG_TARGET_DIR}/OGLCompilerTargets.cmake")
-        if(EXISTS "${GLSLANG_TARGET_DIR}/HLSLTargets.cmake")
-            # hlsl support can be optional
-            include("${GLSLANG_TARGET_DIR}/HLSLTargets.cmake")
-        endif()
-        include("${GLSLANG_TARGET_DIR}/glslangTargets.cmake")
-        include("${GLSLANG_TARGET_DIR}/SPIRVTargets.cmake")
-
-        if (NOT TARGET glslang OR NOT TARGET SPIRV)
-            message(WARNING "glslang or SPIRV target not found! USE_SYSTEM_NCNN will be turned off.")
+        set(GLSLANG_TARGET_DIR "GLSLANG-NOTFOUND" CACHE PATH "Absolute path to glslangTargets.cmake directory")
+        if(NOT GLSLANG_TARGET_DIR AND NOT DEFINED ENV{GLSLANG_TARGET_DIR})
+            message(WARNING "GLSLANG_TARGET_DIR must be defined! USE_SYSTEM_NCNN will be turned off.")
             set(USE_SYSTEM_NCNN OFF)
+        else()
+            message(STATUS "Using glslang install located at ${GLSLANG_TARGET_DIR}")
+            include("${GLSLANG_TARGET_DIR}/OSDependentTargets.cmake")
+            include("${GLSLANG_TARGET_DIR}/OGLCompilerTargets.cmake")
+            if(EXISTS "${GLSLANG_TARGET_DIR}/HLSLTargets.cmake")
+                # hlsl support can be optional
+                include("${GLSLANG_TARGET_DIR}/HLSLTargets.cmake")
+            endif()
+            include("${GLSLANG_TARGET_DIR}/glslangTargets.cmake")
+            include("${GLSLANG_TARGET_DIR}/SPIRVTargets.cmake")
+            if (NOT TARGET glslang OR NOT TARGET SPIRV)
+                message(WARNING "glslang or SPIRV target not found! USE_SYSTEM_NCNN will be turned off.")
+                set(USE_SYSTEM_NCNN OFF)
+            endif()
         endif()
     endif()
 endif()
@@ -101,11 +155,11 @@ if(NOT USE_SYSTEM_NCNN)
     option(NCNN_VULKAN_ONLINE_SPIRV "" ON)
     option(NCNN_BUILD_BENCHMARK "" OFF)
     option(NCNN_BUILD_TESTS "" OFF)
-    option(NCNN_BUILD_TOOLS "" OFF)
+    option(NCNN_BUILD_TOOLS "" ON)
     option(NCNN_BUILD_EXAMPLES "" OFF)
     option(NCNN_DISABLE_RTTI "" ON)
     option(NCNN_DISABLE_EXCEPTION "" ON)
-    option(NCNN_INT8 "" OFF)
+    # option(NCNN_INT8 "" OFF)
 
     option(WITH_LAYER_absval "" OFF)
     option(WITH_LAYER_argmax "" OFF)
@@ -217,7 +271,7 @@ endif()
 if(NOT USE_SYSTEM_WEBP)
     # build libwebp library
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libwebp/CMakeLists.txt")
-        message(FATAL_ERROR "The submodules were not downloaded! Please update submodules with \"git submodule update --init --recursive\" and try again.")
+        message(FATAL_ERROR "The libwebp submodule was not downloaded! Please update submodules with \"git submodule update --init --recursive\" and try again.")
     endif()
 
     option(WEBP_ENABLE_SIMD "" ON)
@@ -239,10 +293,13 @@ if(NOT USE_SYSTEM_WEBP)
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/libwebp/src)
 endif()
 
-waifu2x_add_shader(waifu2x_preproc.comp)
-waifu2x_add_shader(waifu2x_postproc.comp)
-waifu2x_add_shader(waifu2x_preproc_tta.comp)
-waifu2x_add_shader(waifu2x_postproc_tta.comp)
+# look for vulkan compute shader and compile
+set(SHADER_SPV_HEX_FILES)
+
+compile_shader(waifu2x_preproc.comp)
+compile_shader(waifu2x_postproc.comp)
+compile_shader(waifu2x_preproc_tta.comp)
+compile_shader(waifu2x_postproc_tta.comp)
 
 add_custom_target(generate-spirv DEPENDS ${SHADER_SPV_HEX_FILES})
 
@@ -274,4 +331,8 @@ if(USE_STATIC_MOLTENVK)
     )
 endif()
 
-target_link_libraries(waifu2x-ncnn-vulkan ${WAIFU2X_LINK_LIBRARIES})
+if(OPENMP_FOUND)
+    list(APPEND WAIFU2X_LINK_LIBRARIES ${OpenMP_CXX_LIBRARIES})
+endif()
+
+target_link_libraries(waifu2x-ncnn-vulkan ${WAIFU2X_LINK_LIBRARIES} -static-libstdc++)
