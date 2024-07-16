@@ -1,0 +1,4 @@
+[submodule "models"]
+	path = models
+	url = https://github.com/rokibhasansagar/ncnn-vulkan-models.git
+	branch = waifu2x
